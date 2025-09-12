@@ -647,7 +647,7 @@ def compute_mismatch_point(q, chi):
     """Worker function: generate waveform, evaluate surrogate at masked freqs, compute mismatch."""
     # generate waveform
     params = {"q": q, "chi": chi}
-    freqs, h_fd = generate_fd_waveform(params, F_LOWER, DELTA_T, window_type=window_type, epsilon=0.2)
+    freqs, h_fd = generate_fd_waveform(params, F_LOWER, DELTA_T, window_type=window_type, epsilon=0.1)
     if freqs is None:
         return np.nan  # indicate failure
 

@@ -272,10 +272,10 @@ amp_norms = []
 valid_params = []
 
 for params in params_list:
-    freqs, h_fd = generate_fd_waveform(params, f_lower, delta_t, window_type=window_type, epsilon=0.2)
+    freqs, h_fd = generate_fd_waveform(params, f_lower, delta_t, window_type=window_type, epsilon=0.1)
     if freqs is None: continue
 
-    mask = (freqs >= 24) & (freqs <= 1025)
+    mask = (freqs >= f_min_grid) & (freqs <= f_max_grid)
     freqs_masked = freqs[mask]
     
     if freqs_masked.size == 0:
@@ -325,28 +325,13 @@ for i, (amp, phase, freqs) in enumerate(zip(raw_amps, raw_phases, raw_freqs)):
     k_amp = min(3, max(1, freqs.size - 1))
     k_phase = min(3, max(1, freqs.size - 1))
 
-    spline_amp = UnivariateSpline(freqs, amp, s=0, k=k_amp, ext=2)
-    spline_phase = UnivariateSpline(freqs, phase, s=0, k=k_phase, ext=2)
+    spline_amp = UnivariateSpline(freqs, amp, s=0, k=k_amp, ext=0)
+    spline_phase = UnivariateSpline(freqs, phase, s=0, k=k_phase, ext=0)
 
     fmin, fmax = freqs[0], freqs[-1]
 
     A_mat[:, i] = spline_amp(sparse_freq_amp)
     Phi_mat[:, i] = spline_phase(sparse_freq_phase)
-
-    # inside_mask = (sparse_freq_amp >= fmin) & (sparse_freq_amp <= fmax)
-    # outside_mask = ~inside_mask
-    # if inside_mask.any():
-    #     A_mat[inside_mask, i] = spline_amp(sparse_freq_amp[inside_mask])
-    # if outside_mask.any():
-        
-    #     A_mat[outside_mask, i] = spline_amp(sparse_freq_amp[outside_mask])
-
-    # inside_mask_p = (sparse_freq_phase >= fmin) & (sparse_freq_phase <= fmax)
-    # outside_mask_p = ~inside_mask_p
-    # if inside_mask_p.any():
-    #     Phi_mat[inside_mask_p, i] = spline_phase(sparse_freq_phase[inside_mask_p])
-    # if outside_mask_p.any():
-    #     Phi_mat[outside_mask_p, i] = spline_phase(sparse_freq_phase[outside_mask_p])
 
 # -----------------------------------------------------------------------------
 # ## Step III: Compute Reduced Bases via SVD
@@ -359,9 +344,6 @@ Up, sp, Vtp = np.linalg.svd(Phi_mat, full_matrices=False)
 # -----------------------------------------------------------------------------
 # ## Plotting the SVD values
 # -----------------------------------------------------------------------------
-import matplotlib.pyplot as plt
-import numpy as np
-
 def plot_normalized_singular_values(sa, sp):
     """
     Plots normalized singular values and their cumulative sums
@@ -540,7 +522,6 @@ print("Step V: Assembling the surrogate model evaluator.")
 def evaluate_surrogate_fd(q_star, chi_star, freqs_out):
     """
     Evaluates the surrogate model at a new parameter point (q*, chi*).
-    This function implements Eq. (6.10) from the paper. 
     """
     ca_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_a])
     cp_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_p])
@@ -548,8 +529,8 @@ def evaluate_surrogate_fd(q_star, chi_star, freqs_out):
     amp_recon_sparse = B_a @ ca_star
     phase_recon_sparse = B_p @ cp_star
 
-    spline_amp = UnivariateSpline(sparse_freq_amp, amp_recon_sparse, s=0, k=min(3, max(1, sparse_freq_amp.size-1)), ext=2)
-    spline_phase = UnivariateSpline(sparse_freq_phase, phase_recon_sparse, s=0, k=min(3, max(1, sparse_freq_phase.size-1)), ext=2)
+    spline_amp = UnivariateSpline(sparse_freq_amp, amp_recon_sparse, s=0, k=min(3, max(1, sparse_freq_amp.size-1)), ext=0)
+    spline_phase = UnivariateSpline(sparse_freq_phase, phase_recon_sparse, s=0, k=min(3, max(1, sparse_freq_phase.size-1)), ext=0)
     
     amp_final = spline_amp(freqs_out)
     phase_final = spline_phase(freqs_out)
@@ -570,7 +551,7 @@ test_params = {'q': 8.23, 'chi': -0.5}
 # test_params = {'q': 4.5, 'chi': 0.45}
 # test_params = {'q': 1.23, 'chi': -0.7}
 
-true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, epsilon=0.2)
+true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, epsilon=0.1)
 mask = (true_freqs >= f_min_grid) & (true_freqs <= f_max_grid)
 true_freqs_masked = true_freqs[mask]
 true_h_fd_masked = true_h_fd[mask]
