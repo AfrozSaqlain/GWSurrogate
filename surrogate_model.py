@@ -584,7 +584,7 @@ def plot_normalized_singular_values(sa, sp):
     axs[1, 1].grid(True, which="both", ls="--")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(f"{args.results_dir}/singular_value_analysis.pdf", dpi=300)
+    plt.savefig(f"{args.results_dir}/Singular_value_analysis.pdf", dpi=300)
     plt.show()
 
 plot_normalized_singular_values(sa, sp)
@@ -626,7 +626,7 @@ for j, mode in enumerate(modes_to_plot):
 
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.subplots_adjust(hspace=0.3)
-plt.savefig(f"{args.results_dir}/projection_coefficients.pdf", dpi=300)
+plt.savefig(f"{args.results_dir}/Projection_coefficients.pdf", dpi=300)
 plt.show()
 
 # -----------------------------------------------------------------------------
@@ -660,7 +660,7 @@ def plot_normalization_factor(amp_norms_grid, q_unique, chi_unique):
     fig.colorbar(surf, ax=ax, shrink=0.6, aspect=10, pad=0.1)
 
     plt.tight_layout()
-    plt.savefig(f"{args.results_dir}/normalization_factor_variation.pdf", dpi=300)
+    plt.savefig(f"{args.results_dir}/Normalization_factor_variation.pdf", dpi=300)
     plt.show()
 
 print("Plotting the variation of the normalization factor...")
@@ -703,7 +703,7 @@ def plot_basis_functions(basis_matrix, freq_grid, modes_to_plot, basis_type):
     plt.grid(True, which="both", ls="--")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f'{args.results_dir}/{basis_type.lower()}_basis_functions.pdf', dpi=300)
+    plt.savefig(f'{args.results_dir}/{basis_type}_basis_functions.pdf', dpi=300)
     plt.show()
 
 plot_basis_functions(B_a, sparse_freq_amp, [0, 1, 2, 3, 10, 20], 'Amplitude')
