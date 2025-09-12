@@ -62,8 +62,8 @@
 #     amp_recon_sparse = surrogate["B_a"] @ ca_star
 #     phase_recon_sparse = surrogate["B_p"] @ cp_star
 
-#     spline_amp = UnivariateSpline(surrogate["sparse_freq_amp"], amp_recon_sparse, s=0, k=3, ext=2)
-#     spline_phase = UnivariateSpline(surrogate["sparse_freq_phase"], phase_recon_sparse, s=0, k=3, ext=2)
+#     spline_amp = UnivariateSpline(surrogate["sparse_freq_amp"], amp_recon_sparse, s=0, k=3, ext=0)
+#     spline_phase = UnivariateSpline(surrogate["sparse_freq_phase"], phase_recon_sparse, s=0, k=3, ext=0)
 
 #     amp_final = spline_amp(freqs_out)
 #     phase_final = spline_phase(freqs_out)
@@ -491,8 +491,37 @@ def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_
     return window
 
 def planck_taper(N, epsilon=0.1):
-    """
-    Stable Planck-taper window.
+    """Generates a Planck-taper window.
+
+    Planck-taper window is a window function that is flat in the middle and
+    smoothly tapers to zero at both ends.
+
+    The shape of the tapered sections is derived from a function related to
+    Planck's law, which provides an infinitely differentiable transition from the
+    flat-top region (with a value of 1) to the zero-value regions. This
+    implementation uses the logistic function (`scipy.special.expit`) for a
+    numerically stable computation of the taper.
+
+    Parameters
+    ----------
+    N : int
+        The total number of points in the output window.
+    epsilon : float, optional
+        The fraction of the window's length at **each end** that is tapered.
+        This value must be in the range (0, 0.5). For example, if `N` is
+        1000 and `epsilon` is 0.1, the first 100 points and the last 100
+        points form the tapered sections. The default is 0.1.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 1D NumPy array of shape `(N,)` containing the window values, which
+        range from 0.0 to 1.0.
+
+    Raises
+    ------
+    ValueError
+        If `epsilon` is not in the valid range of (0, 0.5).
     """
     if not (0 < epsilon < 0.5):
         raise ValueError("epsilon must be between 0 and 0.5")
@@ -632,8 +661,8 @@ def evaluate_surrogate_fd_worker(q_star, chi_star, freqs_out):
     amp_recon_sparse = SURR_RAW["B_a"] @ ca_star
     phase_recon_sparse = SURR_RAW["B_p"] @ cp_star
 
-    spline_amp = UnivariateSpline(SURR_RAW["sparse_freq_amp"], amp_recon_sparse, s=0, k=3, ext=2)
-    spline_phase = UnivariateSpline(SURR_RAW["sparse_freq_phase"], phase_recon_sparse, s=0, k=3, ext=2)
+    spline_amp = UnivariateSpline(SURR_RAW["sparse_freq_amp"], amp_recon_sparse, s=0, k=3, ext=0)
+    spline_phase = UnivariateSpline(SURR_RAW["sparse_freq_phase"], phase_recon_sparse, s=0, k=3, ext=0)
 
     amp_final = spline_amp(freqs_out)
     phase_final = spline_phase(freqs_out)
@@ -688,8 +717,8 @@ def compute_mismatch_point(q, chi):
 # Main: grid, parallel execution
 # ----------------------------
 # Your original parameters
-f_lower = 20.0
-f_min_grid = 25.0
+f_lower = 15.0
+f_min_grid = 20.0
 f_max_grid = 1024.0
 delta_t = 1/4096
 

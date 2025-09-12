@@ -134,8 +134,37 @@ def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_
     return window
 
 def planck_taper(N, epsilon=0.1):
-    """
-    Planck-taper window.
+    """Generates a Planck-taper window.
+
+    Planck-taper window is a window function that is flat in the middle and
+    smoothly tapers to zero at both ends.
+
+    The shape of the tapered sections is derived from a function related to
+    Planck's law, which provides an infinitely differentiable transition from the
+    flat-top region (with a value of 1) to the zero-value regions. This
+    implementation uses the logistic function (`scipy.special.expit`) for a
+    numerically stable computation of the taper.
+
+    Parameters
+    ----------
+    N : int
+        The total number of points in the output window.
+    epsilon : float, optional
+        The fraction of the window's length at **each end** that is tapered.
+        This value must be in the range (0, 0.5). For example, if `N` is
+        1000 and `epsilon` is 0.1, the first 100 points and the last 100
+        points form the tapered sections. The default is 0.1.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 1D NumPy array of shape `(N,)` containing the window values, which
+        range from 0.0 to 1.0.
+
+    Raises
+    ------
+    ValueError
+        If `epsilon` is not in the valid range of (0, 0.5).
     """
     if not (0 < epsilon < 0.5):
         raise ValueError("epsilon must be between 0 and 0.5")
@@ -257,13 +286,14 @@ chi_vals = np.linspace(-1.0, 1.0, 30)
 param_grid_q, param_grid_chi = np.meshgrid(q_vals, chi_vals)
 params_list = [{'q': q, 'chi': chi} for q, chi in zip(param_grid_q.flatten(), param_grid_chi.flatten())]
 
-f_lower = 20.0
-f_min_grid = 25.0
+f_lower = 15.0
+f_min_grid = 20.0
 f_max_grid = 1024.0
 delta_t = 1/4096
 # nfft = 16 * 4096
 
 window_type = "planck"  # Options: "tukey", "planck", "lal_planck", or None
+epsilon = 0.1
 
 raw_amps = []
 raw_phases = []
@@ -272,7 +302,7 @@ amp_norms = []
 valid_params = []
 
 for params in params_list:
-    freqs, h_fd = generate_fd_waveform(params, f_lower, delta_t, window_type=window_type, epsilon=0.1)
+    freqs, h_fd = generate_fd_waveform(params, f_lower, delta_t, window_type=window_type, epsilon=epsilon)
     if freqs is None: continue
 
     mask = (freqs >= f_min_grid) & (freqs <= f_max_grid)
@@ -341,6 +371,166 @@ print("Step III: Performing SVD to find reduced bases...")
 Ua, sa, Vta = np.linalg.svd(A_mat, full_matrices=False)
 Up, sp, Vtp = np.linalg.svd(Phi_mat, full_matrices=False)
 
+rank_a = 200
+rank_p = 150
+
+B_a = Ua[:, :rank_a] 
+B_p = Up[:, :rank_p] 
+
+# -----------------------------------------------------------------------------
+# ## Step IV: Interpolate Projection Coefficients
+# -----------------------------------------------------------------------------
+print("Step IV: Interpolating projection coefficients...")
+
+Ca = B_a.T @ A_mat
+Cp = B_p.T @ Phi_mat
+
+q_unique = np.unique(param_grid_q)
+chi_unique = np.unique(param_grid_chi)
+
+interpolants_a = []
+for i in range(rank_a):
+    coeff_grid = Ca[i, :].reshape(len(chi_unique), len(q_unique))
+    interp = RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3)
+    interpolants_a.append(interp)
+
+interpolants_p = []
+for i in range(rank_p):
+    coeff_grid = Cp[i, :].reshape(len(chi_unique), len(q_unique))
+    interp = RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3)
+    interpolants_p.append(interp)
+
+amp_norms_grid = np.array(amp_norms).reshape(len(chi_unique), len(q_unique))
+interp_amp_norm = RectBivariateSpline(chi_unique, q_unique, amp_norms_grid, kx=3, ky=3)
+
+# -----------------------------------------------------------------------------
+# ## Step V: Assemble and Evaluate the Surrogate Model
+# -----------------------------------------------------------------------------
+print("Step V: Assembling the surrogate model evaluator.")
+
+def evaluate_surrogate_fd(q_star, chi_star, freqs_out):
+    """
+    Evaluates the surrogate model at a new parameter point (q*, chi*).
+    """
+    ca_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_a])
+    cp_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_p])
+
+    amp_recon_sparse = B_a @ ca_star
+    phase_recon_sparse = B_p @ cp_star
+
+    spline_amp = UnivariateSpline(sparse_freq_amp, amp_recon_sparse, s=0, k=min(3, max(1, sparse_freq_amp.size-1)), ext=0)
+    spline_phase = UnivariateSpline(sparse_freq_phase, phase_recon_sparse, s=0, k=min(3, max(1, sparse_freq_phase.size-1)), ext=0)
+    
+    amp_final = spline_amp(freqs_out)
+    phase_final = spline_phase(freqs_out)
+
+    norm_star = interp_amp_norm(chi_star, q_star)[0, 0]
+    amp_final *= norm_star
+
+    h_fd_recon = amp_final * np.exp(1j * phase_final)
+    
+    return freqs_out, h_fd_recon
+
+print("\nValidating model with a test waveform...")
+
+# -----------------------------------------------------------------------------
+# ## Run a test case to validate the surrogate model
+# -----------------------------------------------------------------------------
+test_params = {'q': 8.23, 'chi': -0.5}
+# test_params = {'q': 4.5, 'chi': 0.45}
+# test_params = {'q': 1.23, 'chi': -0.7}
+
+true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, epsilon=epsilon)
+mask = (true_freqs >= f_min_grid) & (true_freqs <= f_max_grid)
+true_freqs_masked = true_freqs[mask]
+true_h_fd_masked = true_h_fd[mask]
+true_amp, true_phase = get_amp_phase(true_freqs_masked, true_h_fd_masked)
+
+surr_freqs, surr_h_fd = evaluate_surrogate_fd(test_params['q'], test_params['chi'], true_freqs_masked)
+
+surr_amp = np.abs(surr_h_fd)
+surr_phase = np.unwrap(np.angle(surr_h_fd))
+
+# -----------------------------------------------------------------------------
+# ## Compute mismatch
+# -----------------------------------------------------------------------------
+pycbc_surr_h_fd = pycbc.types.FrequencySeries(surr_h_fd, delta_f=true_freqs_masked[1]-true_freqs_masked[0], epoch=0)
+pycbc_true_h_fd = pycbc.types.FrequencySeries(true_h_fd_masked, delta_f=true_freqs_masked[1]-true_freqs_masked[0], epoch=0)
+pycbc_surr_h_fd.start_time = 0
+pycbc_true_h_fd.start_time = 0
+
+mismatch = 1 - pycbc.filter.matchedfilter.optimized_match(pycbc_surr_h_fd, pycbc_true_h_fd, psd=pycbc.psd.aLIGOZeroDetHighPower(len(pycbc_true_h_fd), pycbc_true_h_fd.delta_f, f_lower), low_frequency_cutoff=f_min_grid)[0]
+print(f"Mismatch between surrogate model and true model = {mismatch:.3e}")
+
+# -----------------------------------------------------------------------------
+# ## Plot the results
+# -----------------------------------------------------------------------------
+plt.style.use('seaborn-v0_8-whitegrid')
+fig, axs = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+fig.suptitle(rf"Surrogate Model Validation for q={test_params['q']}, $\chi$={test_params['chi']}", fontsize=16)
+
+axs[0].loglog(true_freqs_masked, true_amp, label='True Waveform', lw=3, alpha=0.8)
+axs[0].loglog(surr_freqs, surr_amp, '--', label='Surrogate Model', lw=2, color='red')
+axs[0].set_ylabel('Amplitude', fontsize=12)
+axs[0].legend(fontsize=11)
+axs[0].set_title('Amplitude Comparison', fontsize=14)
+axs[0].grid(True, which="both", ls="--")
+
+axs[1].semilogx(true_freqs_masked, true_phase, label='True Waveform (centered)', lw=3, alpha=0.8)
+axs[1].semilogx(surr_freqs, surr_phase, '--', label='Surrogate Model (centered)', lw=2, color='red')
+axs[1].set_xlabel('Frequency (Hz)', fontsize=12)
+axs[1].set_ylabel('Phase (rad)', fontsize=12)
+axs[1].legend(fontsize=11)
+axs[1].set_title('Phase Comparison', fontsize=14)
+axs[1].grid(True, which="both", ls="--")
+
+plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+plt.savefig(f'{args.results_dir}/Surrogate_Model_vs_True_Model_1.pdf')
+plt.show()
+
+# -----------------------------------------------------------------------------
+# ## Save the Surrogate Model
+# -----------------------------------------------------------------------------
+def save_surrogate(filename, data):
+    """Save surrogate model data to disk."""
+    with open(filename, "wb") as f:
+        pickle.dump(data, f)
+
+surrogate_data = {
+    "sparse_freq_amp": sparse_freq_amp,
+    "sparse_freq_phase": sparse_freq_phase,
+    "B_a": B_a,
+    "B_p": B_p,
+    "Ca": Ca,
+    "Cp": Cp,
+    "amp_norms_grid": amp_norms_grid,
+    "q_unique": q_unique,
+    "chi_unique": chi_unique
+}
+
+save_surrogate("Models/surrogate_model.pkl", surrogate_data)
+print("Surrogate model saved to surrogate_model.pkl")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# ########################## Some additional plots ############################
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
 # -----------------------------------------------------------------------------
 # ## Plotting the SVD values
 # -----------------------------------------------------------------------------
@@ -397,42 +587,7 @@ def plot_normalized_singular_values(sa, sp):
     plt.savefig(f"{args.results_dir}/singular_value_analysis.pdf", dpi=300)
     plt.show()
 
-
 plot_normalized_singular_values(sa, sp)
-
-rank_a = 200
-rank_p = 150
-
-B_a = Ua[:, :rank_a] 
-B_p = Up[:, :rank_p] 
-
-# -----------------------------------------------------------------------------
-# ## Step IV: Interpolate Projection Coefficients
-# -----------------------------------------------------------------------------
-print("Step IV: Interpolating projection coefficients...")
-
-Ca = B_a.T @ A_mat
-Cp = B_p.T @ Phi_mat
-
-
-q_unique = np.unique(param_grid_q)
-chi_unique = np.unique(param_grid_chi)
-
-
-interpolants_a = []
-for i in range(rank_a):
-    coeff_grid = Ca[i, :].reshape(len(chi_unique), len(q_unique))
-    interp = RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3)
-    interpolants_a.append(interp)
-
-interpolants_p = []
-for i in range(rank_p):
-    coeff_grid = Cp[i, :].reshape(len(chi_unique), len(q_unique))
-    interp = RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3)
-    interpolants_p.append(interp)
-
-amp_norms_grid = np.array(amp_norms).reshape(len(chi_unique), len(q_unique))
-interp_amp_norm = RectBivariateSpline(chi_unique, q_unique, amp_norms_grid, kx=3, ky=3)
 
 # -----------------------------------------------------------------------------
 # ## Check smoothness of projection coefficients
@@ -493,10 +648,8 @@ def plot_normalization_factor(amp_norms_grid, q_unique, chi_unique):
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    # Create a meshgrid for plotting
     Q, Chi = np.meshgrid(q_unique, chi_unique)
 
-    # Create the surface plot
     surf = ax.plot_surface(Q, Chi, amp_norms_grid, cmap="viridis", edgecolor="none")
     ax.set_title("Variation of Waveform Normalization Factor", fontsize=16)
     ax.set_xlabel("Mass ratio q", fontsize=12)
@@ -504,7 +657,6 @@ def plot_normalization_factor(amp_norms_grid, q_unique, chi_unique):
     ax.set_zlabel("Normalization Factor (Norm)", fontsize=12)
     ax.zaxis.labelpad = 15
 
-    # Add a color bar
     fig.colorbar(surf, ax=ax, shrink=0.6, aspect=10, pad=0.1)
 
     plt.tight_layout()
@@ -515,51 +667,51 @@ print("Plotting the variation of the normalization factor...")
 plot_normalization_factor(amp_norms_grid, q_unique, chi_unique)
 
 # -----------------------------------------------------------------------------
-# ## Step V: Assemble and Evaluate the Surrogate Model
+# ## Plotting the Basis Functions
 # -----------------------------------------------------------------------------
-print("Step V: Assembling the surrogate model evaluator.")
-
-def evaluate_surrogate_fd(q_star, chi_star, freqs_out):
+def plot_basis_functions(basis_matrix, freq_grid, modes_to_plot, basis_type):
     """
-    Evaluates the surrogate model at a new parameter point (q*, chi*).
+    Plots the specified basis functions against their frequency grid.
+
+    This helps visualize the principal components of the waveform model.
+
+    Parameters:
+    -----------
+    basis_matrix : 2D numpy array
+        Matrix whose columns are the basis functions (e.g., B_a or B_p).
+    freq_grid : 1D numpy array
+        The sparse frequency grid corresponding to the basis.
+    modes_to_plot : list of int
+        A list of indices for the basis functions (modes) to plot.
+    basis_type : str
+        A string ('Amplitude' or 'Phase') to label the plot title and filename.
     """
-    ca_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_a])
-    cp_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_p])
+    plt.style.use('seaborn-v0_8-whitegrid')
+    plt.figure(figsize=(12, 7))
 
-    amp_recon_sparse = B_a @ ca_star
-    phase_recon_sparse = B_p @ cp_star
+    # Plot each specified basis function
+    for mode in modes_to_plot:
+        if mode < basis_matrix.shape[1]:
+            plt.plot(freq_grid, basis_matrix[:, mode], label=f'Basis Function {mode}', lw=2)
+        else:
+            print(f"Warning: Mode {mode} is out of bounds for the given basis matrix.")
 
-    spline_amp = UnivariateSpline(sparse_freq_amp, amp_recon_sparse, s=0, k=min(3, max(1, sparse_freq_amp.size-1)), ext=0)
-    spline_phase = UnivariateSpline(sparse_freq_phase, phase_recon_sparse, s=0, k=min(3, max(1, sparse_freq_phase.size-1)), ext=0)
-    
-    amp_final = spline_amp(freqs_out)
-    phase_final = spline_phase(freqs_out)
+    plt.title(f'{basis_type} Basis Functions', fontsize=16)
+    plt.xlabel('Frequency (Hz)', fontsize=12)
+    plt.ylabel('Basis Function Value', fontsize=12)
+    plt.xscale('log') # Use a log scale for frequency for better visualization
+    plt.grid(True, which="both", ls="--")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{args.results_dir}/{basis_type.lower()}_basis_functions.pdf', dpi=300)
+    plt.show()
 
-    norm_star = interp_amp_norm(chi_star, q_star)[0, 0]
-    amp_final *= norm_star
-
-    h_fd_recon = amp_final * np.exp(1j * phase_final)
-    
-    return freqs_out, h_fd_recon
-
-print("\nValidating model with a test waveform...")
+plot_basis_functions(B_a, sparse_freq_amp, [0, 1, 2, 3, 10, 20], 'Amplitude')
+plot_basis_functions(B_p, sparse_freq_phase, [0, 1, 2, 3, 10, 20], 'Phase')
 
 # -----------------------------------------------------------------------------
-# ## Run a test case to validate the surrogate model
+# ## Plotting the waveforms in frequency domain
 # -----------------------------------------------------------------------------
-test_params = {'q': 8.23, 'chi': -0.5}
-# test_params = {'q': 4.5, 'chi': 0.45}
-# test_params = {'q': 1.23, 'chi': -0.7}
-
-true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, epsilon=0.1)
-mask = (true_freqs >= f_min_grid) & (true_freqs <= f_max_grid)
-true_freqs_masked = true_freqs[mask]
-true_h_fd_masked = true_h_fd[mask]
-true_amp, true_phase = get_amp_phase(true_freqs_masked, true_h_fd_masked)
-
-
-surr_freqs, surr_h_fd = evaluate_surrogate_fd(test_params['q'], test_params['chi'], true_freqs_masked)
-
 # plt.plot(true_freqs_masked, np.abs(true_h_fd_masked), label='True Waveform', lw=2)
 # plt.plot(surr_freqs, np.abs(surr_h_fd), '--', label='Surrogate Model', lw=2)
 # plt.xscale('log')
@@ -569,66 +721,3 @@ surr_freqs, surr_h_fd = evaluate_surrogate_fd(test_params['q'], test_params['chi
 # plt.title(f"Surrogate Model Validation for q={test_params['q']}, $\chi$={test_params['chi']}")
 # plt.legend()
 # plt.grid(True, which="both", ls="--")
-
-surr_amp = np.abs(surr_h_fd)
-surr_phase = np.unwrap(np.angle(surr_h_fd))
-
-plt.style.use('seaborn-v0_8-whitegrid')
-fig, axs = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
-fig.suptitle(rf"Surrogate Model Validation for q={test_params['q']}, $\chi$={test_params['chi']}", fontsize=16)
-
-axs[0].loglog(true_freqs_masked, true_amp, label='True Waveform', lw=3, alpha=0.8)
-axs[0].loglog(surr_freqs, surr_amp, '--', label='Surrogate Model', lw=2, color='red')
-axs[0].set_ylabel('Amplitude', fontsize=12)
-axs[0].legend(fontsize=11)
-axs[0].set_title('Amplitude Comparison', fontsize=14)
-axs[0].grid(True, which="both", ls="--")
-
-axs[1].semilogx(true_freqs_masked, true_phase, label='True Waveform (centered)', lw=3, alpha=0.8)
-axs[1].semilogx(surr_freqs, surr_phase, '--', label='Surrogate Model (centered)', lw=2, color='red')
-axs[1].set_xlabel('Frequency (Hz)', fontsize=12)
-axs[1].set_ylabel('Phase (rad)', fontsize=12)
-axs[1].legend(fontsize=11)
-axs[1].set_title('Phase Comparison', fontsize=14)
-axs[1].grid(True, which="both", ls="--")
-
-# -----------------------------------------------------------------------------
-# ## Compute mismatch
-# -----------------------------------------------------------------------------
-pycbc_surr_h_fd = pycbc.types.FrequencySeries(surr_h_fd, delta_f=true_freqs_masked[1]-true_freqs_masked[0], epoch=0)
-pycbc_true_h_fd = pycbc.types.FrequencySeries(true_h_fd_masked, delta_f=true_freqs_masked[1]-true_freqs_masked[0], epoch=0)
-pycbc_surr_h_fd.start_time = 0
-pycbc_true_h_fd.start_time = 0
-
-mismatch = 1 - pycbc.filter.matchedfilter.optimized_match(pycbc_surr_h_fd, pycbc_true_h_fd, psd=pycbc.psd.aLIGOZeroDetHighPower(len(pycbc_true_h_fd), pycbc_true_h_fd.delta_f, f_lower), low_frequency_cutoff=f_min_grid)[0]
-print(f"Mismatch between surrogate model and true model = {mismatch:.3e}")
-
-# -----------------------------------------------------------------------------
-# ## Plot the results
-# -----------------------------------------------------------------------------
-plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-plt.savefig(f'{args.results_dir}/Surrogate_Model_vs_True_Model_1.pdf')
-plt.show()
-
-# -----------------------------------------------------------------------------
-# ## Save the Surrogate Model
-# -----------------------------------------------------------------------------
-def save_surrogate(filename, data):
-    """Save surrogate model data to disk."""
-    with open(filename, "wb") as f:
-        pickle.dump(data, f)
-
-surrogate_data = {
-    "sparse_freq_amp": sparse_freq_amp,
-    "sparse_freq_phase": sparse_freq_phase,
-    "B_a": B_a,
-    "B_p": B_p,
-    "Ca": Ca,
-    "Cp": Cp,
-    "amp_norms_grid": amp_norms_grid,
-    "q_unique": q_unique,
-    "chi_unique": chi_unique
-}
-
-save_surrogate("Models/surrogate_model.pkl", surrogate_data)
-print("Surrogate model saved to surrogate_model.pkl")
