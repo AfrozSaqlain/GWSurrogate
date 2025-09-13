@@ -547,7 +547,7 @@ def plot_normalized_singular_values(sa, sp):
 
     # --- Amplitude singular values ---
     normalized_sa = sa / sa[0]
-    x_sa = np.arange(1, len(sa) + 1)  # start x-axis at 1
+    x_sa = np.arange(1, len(sa) + 1)
     axs[0, 0].semilogy(x_sa, normalized_sa, '-o', markersize=4)
     axs[0, 0].set_ylim(min(normalized_sa), 1.0)
     axs[0, 0].set_title("Amplitude Singular Values", fontsize=14)
@@ -689,7 +689,6 @@ def plot_basis_functions(basis_matrix, freq_grid, modes_to_plot, basis_type):
     plt.style.use('seaborn-v0_8-whitegrid')
     plt.figure(figsize=(12, 7))
 
-    # Plot each specified basis function
     for mode in modes_to_plot:
         if mode < basis_matrix.shape[1]:
             plt.plot(freq_grid, basis_matrix[:, mode], label=f'Basis Function {mode}', lw=2)
@@ -699,7 +698,7 @@ def plot_basis_functions(basis_matrix, freq_grid, modes_to_plot, basis_type):
     plt.title(f'{basis_type} Basis Functions', fontsize=16)
     plt.xlabel('Frequency (Hz)', fontsize=12)
     plt.ylabel('Basis Function Value', fontsize=12)
-    plt.xscale('log') # Use a log scale for frequency for better visualization
+    plt.xscale('log') 
     plt.grid(True, which="both", ls="--")
     plt.legend()
     plt.tight_layout()
