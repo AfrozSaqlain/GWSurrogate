@@ -345,11 +345,13 @@
 
 
 import os
+import math
 import pycbc
 import pickle
 import argparse
 import pycbc.psd
 import numpy as np
+from tqdm import tqdm
 from scipy.special import expit
 import matplotlib.pyplot as plt
 from scipy.signal import windows
@@ -359,8 +361,6 @@ from pycbc.waveform import get_td_waveform
 from scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import UnivariateSpline, RectBivariateSpline
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from tqdm import tqdm
-import math
 
 # ----------------------------
 # CLI
@@ -380,7 +380,7 @@ NPROCS = args.nprocs or os.cpu_count()
 # Window and waveform helpers
 # ----------------------------
 LALSIMULATION_RINGING_EXTENT = 19
-def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=2, num_extrema_end=2):
+def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=32, num_extrema_end=32):
     """
     Parameters:
     -----------
@@ -491,38 +491,6 @@ def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_
     return window
 
 def planck_taper(N, epsilon=0.1):
-    """Generates a Planck-taper window.
-
-    Planck-taper window is a window function that is flat in the middle and
-    smoothly tapers to zero at both ends.
-
-    The shape of the tapered sections is derived from a function related to
-    Planck's law, which provides an infinitely differentiable transition from the
-    flat-top region (with a value of 1) to the zero-value regions. This
-    implementation uses the logistic function (`scipy.special.expit`) for a
-    numerically stable computation of the taper.
-
-    Parameters
-    ----------
-    N : int
-        The total number of points in the output window.
-    epsilon : float, optional
-        The fraction of the window's length at **each end** that is tapered.
-        This value must be in the range (0, 0.5). For example, if `N` is
-        1000 and `epsilon` is 0.1, the first 100 points and the last 100
-        points form the tapered sections. The default is 0.1.
-
-    Returns
-    -------
-    numpy.ndarray
-        A 1D NumPy array of shape `(N,)` containing the window values, which
-        range from 0.0 to 1.0.
-
-    Raises
-    ------
-    ValueError
-        If `epsilon` is not in the valid range of (0, 0.5).
-    """
     if not (0 < epsilon < 0.5):
         raise ValueError("epsilon must be between 0 and 0.5")
 
@@ -543,7 +511,7 @@ def planck_taper(N, epsilon=0.1):
 
     return w
 
-def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', epsilon=0.1):
+def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', padding_type='power_of_2', epsilon=0.1, num_extrema_start=32, num_extrema_end=32):
     """Generates a time-domain waveform, applies a window, and converts to frequency domain."""
     q = params['q']
     chi = params['chi']
@@ -567,14 +535,18 @@ def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', eps
     elif window_type == "planck":
         window = planck_taper(len(h_td_raw), epsilon=epsilon)
     elif window_type == "lal_planck":
-        window = Planck_window_LAL(h_td_raw, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=2, num_extrema_end=2) 
+        window = Planck_window_LAL(h_td_raw, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end) 
     else:
         window = np.ones(len(h_td_raw))
 
     h_td_windowed = h_td_raw * window
-
+    
     L = len(h_td_windowed)
-    nfft = 2 ** int(np.ceil(np.log2(2 * L)))
+    
+    if padding_type == "power_of_2":
+      nfft = 2 ** int(np.ceil(np.log2(2 * L)))
+    elif padding_type == 'double':
+      nfft = 2 * L
 
     h_td = np.pad(h_td_windowed, (0, nfft - L))
 
@@ -583,7 +555,7 @@ def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', eps
     return freqs, h_fd
 
 # ----------------------------
-# Load surrogate raw data (picklable)
+# Load surrogate raw data
 # ----------------------------
 def load_surrogate_raw(filename):
     """Load surrogate pickle and return raw arrays that are picklable. Do NOT build spline objects yet."""
@@ -604,7 +576,7 @@ def load_surrogate_raw(filename):
     return raw
 
 surrogate_raw = load_surrogate_raw(args.surrogate_file)
-print("Surrogate raw data loaded (picklable).")
+print("Surrogate raw data loaded.")
 
 # ----------------------------
 # Worker-side global cache (will be set by initializer)
@@ -661,8 +633,8 @@ def evaluate_surrogate_fd_worker(q_star, chi_star, freqs_out):
     amp_recon_sparse = SURR_RAW["B_a"] @ ca_star
     phase_recon_sparse = SURR_RAW["B_p"] @ cp_star
 
-    spline_amp = UnivariateSpline(SURR_RAW["sparse_freq_amp"], amp_recon_sparse, s=0, k=3, ext=0)
-    spline_phase = UnivariateSpline(SURR_RAW["sparse_freq_phase"], phase_recon_sparse, s=0, k=3, ext=0)
+    spline_amp = UnivariateSpline(SURR_RAW["sparse_freq_amp"], amp_recon_sparse, s=0, k=3, ext=2)
+    spline_phase = UnivariateSpline(SURR_RAW["sparse_freq_phase"], phase_recon_sparse, s=0, k=3, ext=2)
 
     amp_final = spline_amp(freqs_out)
     phase_final = spline_phase(freqs_out)
@@ -676,11 +648,14 @@ def compute_mismatch_point(q, chi):
     """Worker function: generate waveform, evaluate surrogate at masked freqs, compute mismatch."""
     # generate waveform
     params = {"q": q, "chi": chi}
-    freqs, h_fd = generate_fd_waveform(params, F_LOWER, DELTA_T, window_type=window_type, epsilon=0.1)
+
+    freqs, h_fd = generate_fd_waveform(params, F_LOWER, DELTA_T, window_type=window_type, padding_type='power_of_2', epsilon=0.1, num_extrema_start=2, num_extrema_end=2)
+
     if freqs is None:
         return np.nan  # indicate failure
 
     mask = (freqs >= F_MIN_GRID) & (freqs <= F_MAX_GRID)
+    
     if not np.any(mask):
         return np.nan
 
@@ -719,14 +694,14 @@ def compute_mismatch_point(q, chi):
 # Your original parameters
 f_lower = 15.0
 f_min_grid = 20.0
-f_max_grid = 1024.0
+f_max_grid = 725.0
 delta_t = 1/4096
 
 window_type = 'planck'
 
 total_mass = 40
-q_vals = np.linspace(1, 10, 100)
-chi_vals = np.linspace(-0.8, 0.6, 100)
+q_vals = np.linspace(1, 10, 50)
+chi_vals = np.linspace(-1.0, 1.0, 50)
 
 # Prepare pairs to evaluate
 pairs = [(q, chi) for chi in chi_vals for q in q_vals]  # order: chi major then q minor (matches your array shape)
