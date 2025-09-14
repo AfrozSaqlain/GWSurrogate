@@ -111,3 +111,24 @@ def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_
         window[end-n+2:end] = 1.0/(np.exp(z) + 1.0)
 
     return window
+
+def planck_taper(N, epsilon=0.1):
+    if not (0 < epsilon < 0.5):
+        raise ValueError("epsilon must be between 0 and 0.5")
+
+    w = np.ones(N)
+    L = int(epsilon * N)
+
+    if L == 0:
+        return w
+
+    n = np.arange(1, L)
+    x = L/n - L/(L-n)
+    w[:L-1] = expit(-x)
+    w[0] = 0.0
+
+    x = L/(L-n) - L/n
+    w[-(L-1):] = expit(-x)
+    w[-1] = 0.0
+
+    return w
