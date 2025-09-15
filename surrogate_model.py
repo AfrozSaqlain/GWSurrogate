@@ -4,6 +4,7 @@ import pickle
 import argparse
 import pycbc.psd
 import numpy as np
+import multiprocessing
 from scipy.special import expit
 import matplotlib.pyplot as plt
 from scipy.signal import windows
@@ -186,148 +187,137 @@ def planck_taper(N, epsilon=0.1):
 
     return w
 
-def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', epsilon=0.1):
-    """Generates a time-domain waveform, applies a window, and converts to frequency domain."""
+def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', padding_type='power_of_2', epsilon=0.1, num_extrema_start=32, num_extrema_end=32):
     q = params['q']
     chi = params['chi']
     M_total = 40.0
     m2 = M_total / (1 + q)
     m1 = q * M_total / (1 + q)
 
-    try:
-        hp, _ = get_td_waveform(approximant='SEOBNRv4_opt',
-                                  mass1=m1, mass2=m2,
-                                  spin1z=chi, spin2z=chi,
-                                  delta_t=delta_t,
-                                  f_lower=f_lower)
-        h_td_raw = hp.numpy()
-    except Exception as e:
-        print(f"Could not generate waveform for q={q}, chi={chi}: {e}")
-        return None, None
+
+    hp, _ = get_td_waveform(approximant='SEOBNRv4_opt',
+                                mass1=m1, mass2=m2,
+                                spin1z=chi, spin2z=chi,
+                                delta_t=delta_t,
+                                f_lower=f_lower)
+    h_td_raw = hp.numpy()
 
     if window_type == "tukey":
         window = windows.tukey(len(h_td_raw), alpha=0.1)
     elif window_type == "planck":
         window = planck_taper(len(h_td_raw), epsilon=epsilon)
     elif window_type == "lal_planck":
-        window = Planck_window_LAL(h_td_raw, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=2, num_extrema_end=2) 
+        window = Planck_window_LAL(h_td_raw, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end) 
     else:
         window = np.ones(len(h_td_raw))
 
     h_td_windowed = h_td_raw * window
     
-    #refined the zero-padding scheme by extending the waveform length to the smallest power of two greater than twice its original length. This approach ensures efficient FFT computation and improves frequency resolution by providing a denser sampling of the frequency axis without altering the underlying physical content of the signal.
-
     L = len(h_td_windowed)
-    nfft = 2 ** int(np.ceil(np.log2(2 * L)))
+    
+    if padding_type == "power_of_2":
+      nfft = 2 ** int(np.ceil(np.log2(2 * L)))
+    elif padding_type == 'double':
+      nfft = 2 * L
 
     h_td = np.pad(h_td_windowed, (0, nfft - L))
+
+    # if padding_type == "power_of_2":
+    #     nfft = 2 ** int(np.ceil(np.log2(2 * L)))
+    # elif padding_type == "double":
+    #     nfft = 2 * L
+
+    # total_pad = nfft - L
+    # pad_left = total_pad // 2
+    # pad_right = total_pad - pad_left
+
+    # h_td = np.pad(h_td_windowed, (pad_left, pad_right))
 
     freqs = rfftfreq(nfft, delta_t)
     h_fd = rfft(h_td)
     return freqs, h_fd
 
 def get_amp_phase(freqs, h_fd):
-    """
-    Extracts amplitude and unwrapped phase.
-    Perform a two-step centering:
-    1. Removes a linear fit to detrend the phase.
-    2. Anchors the phase to start at zero for numerical stability.
-    """
     amp = np.abs(h_fd)
     phase = np.unwrap(np.angle(h_fd))
 
-    if len(freqs) > 1:
-        poly_fit = np.polyfit(freqs, phase, 1)
-        linear_phase = np.polyval(poly_fit, freqs)
-        phase_centered = phase - linear_phase
-    else:
-        phase_centered = phase
-    if len(phase_centered) > 0:
-        phase_offset = phase_centered[0]
-        phase_anchored = phase_centered - phase_offset
-    else:
-        phase_anchored = phase_centered
+    poly_fit = np.polyfit(freqs, phase, 1)
+    linear_phase = np.polyval(poly_fit, freqs)
+    phase_centered = phase - linear_phase
+    
+    phase_offset = phase_centered[0]
+    phase_anchored = phase_centered - phase_offset
 
     return amp, phase_anchored
 
 def generate_sparse_grid(f_min, f_max, num_points, power=4/3):
-    """
-    Implements a simplified version of the 'Constant Spline Error' (CSE) grid generation
-    The grid spacing Delta(f) is proportional to f^power.
-    """
     if power == 1:
         return np.geomspace(f_min, f_max, num_points)
+
+    y_min = f_min**(1 - power)
+    y_max = f_max**(1 - power)
+
+    y_grid = np.linspace(y_min, y_max, num_points)
+
+    f_grid = y_grid**(1 / (1 - power))
+
+    f_grid[0] = f_min
+    f_grid[-1] = f_max
     
-    def integrated_spacing(f):
-        return f**(1-power)
-
-    C = (integrated_spacing(f_max) - integrated_spacing(f_min)) / (num_points - 1)
-
-    grid = []
-    f_current = f_min
-    for _ in range(num_points):
-        grid.append(f_current)
-        if f_current >= f_max:
-            break
-        f_next_integrated = integrated_spacing(f_current) + C
-        f_current = f_next_integrated**(1 / (1-power))
-        
-    grid = np.array(grid)
-    return grid
+    return f_grid
 
 # -----------------------------------------------------------------------------
 # ## Step I: Generate and Pre-process Training Waveforms
 # -----------------------------------------------------------------------------
 print("Step I: Generating training data...")
 
-q_vals = np.linspace(1, 10, 30)
-chi_vals = np.linspace(-1.0, 1.0, 30)
+def process_waveform(params, f_lower, delta_t, window_type, epsilon, num_extrema_start, num_extrema_end, f_min_mask, f_max_mask):
+    
+    freqs, h_fd = generate_fd_waveform(params=params, f_lower=f_lower, delta_t=delta_t, window_type=window_type, padding_type='power_of_2', epsilon=epsilon, num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end)
+    mask = (freqs >= f_min_mask) & (freqs <= f_max_mask)
+    freqs_masked = freqs[mask]
+
+    amp, phase = get_amp_phase(freqs_masked, h_fd[mask])
+    df = freqs_masked[1] - freqs_masked[0]
+    norm = np.sqrt(np.sum(amp**2) * df)
+    
+    return (amp / norm, norm, phase, freqs_masked, params)
+
+bounds_q = (1, 10)
+bounds_chi = (-1, 1)
+
+q_vals = np.concatenate((
+    np.linspace(bounds_q[0], bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.2, 20, endpoint=False),
+    np.linspace(bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.2, bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.8, 10, endpoint=False),
+    np.linspace(bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.8, bounds_q[1], 20)
+))
+
+chi_vals = np.concatenate((
+    np.linspace(bounds_chi[0], bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.2, 20, endpoint=False),
+    np.linspace(bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.2, bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.8, 10, endpoint=False),
+    np.linspace(bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.8, bounds_chi[1], 20)
+))
+
 param_grid_q, param_grid_chi = np.meshgrid(q_vals, chi_vals)
 params_list = [{'q': q, 'chi': chi} for q, chi in zip(param_grid_q.flatten(), param_grid_chi.flatten())]
 
-f_lower = 15.0
-f_min_grid = 20.0
-f_max_grid = 1024.0
+f_lower = 16.0
 delta_t = 1/4096
-# nfft = 16 * 4096
-
-window_type = "planck"  # Options: "tukey", "planck", "lal_planck", or None
+f_min_mask = 20.0
+f_max_mask = 725.0
+window_type = "planck"
 epsilon = 0.1
+num_extrema_start=32
+num_extrema_end=32
 
-raw_amps = []
-raw_phases = []
-raw_freqs = []
-amp_norms = []
-valid_params = []
+args_for_starmap = [(p, f_lower, delta_t, window_type, epsilon, num_extrema_start, num_extrema_end, f_min_mask, f_max_mask) for p in params_list]
 
-for params in params_list:
-    freqs, h_fd = generate_fd_waveform(params, f_lower, delta_t, window_type=window_type, epsilon=epsilon)
-    if freqs is None: continue
+num_processes = multiprocessing.cpu_count()
+with multiprocessing.Pool(processes=num_processes) as pool:
+    results = pool.starmap(process_waveform, args_for_starmap)
 
-    mask = (freqs >= f_min_grid) & (freqs <= f_max_grid)
-    freqs_masked = freqs[mask]
-    
-    if freqs_masked.size == 0:
-        continue
-
-    amp, phase = get_amp_phase(freqs_masked, h_fd[mask])
-
-    if amp.size < 2:
-        continue
-    df = freqs_masked[1] - freqs_masked[0]
-
-    norm = np.sqrt(np.sum(amp**2) * df)
-
-    if norm == 0 or not np.isfinite(norm):
-        continue
-
-    raw_amps.append(amp / norm)
-    amp_norms.append(norm)
-
-    raw_phases.append(phase)
-    raw_freqs.append(freqs_masked)
-    valid_params.append(params)
+valid_results = [r for r in results if r is not None]
+raw_amps, amp_norms, raw_phases, raw_freqs, valid_params = zip(*valid_results)
 
 print(f"Generated {len(raw_amps)} valid waveforms.")
 
@@ -336,27 +326,19 @@ print(f"Generated {len(raw_amps)} valid waveforms.")
 # -----------------------------------------------------------------------------
 print("Step II: Creating sparse grids and interpolating...")
 
-# Higher power corresponds to finer spacing at low frequencies and 
-# low power corresponds to finer spacing at high frequencies.
-sparse_freq_amp = generate_sparse_grid(f_min_grid, f_max_grid, num_points=200, power=1) 
+f_min_grid = 20.0
+f_max_grid = 725.0
+
+sparse_freq_amp = generate_sparse_grid(f_min_grid, f_max_grid, num_points=200, power=1.4) 
 sparse_freq_phase = generate_sparse_grid(f_min_grid, f_max_grid, num_points=200, power=4/3)
 
 A_mat = np.zeros((len(sparse_freq_amp), len(raw_amps)))
 Phi_mat = np.zeros((len(sparse_freq_phase), len(raw_phases)))
 
 for i, (amp, phase, freqs) in enumerate(zip(raw_amps, raw_phases, raw_freqs)):
-    uniq_idx = np.where(np.diff(freqs, prepend=freqs[0]-1e-12) > 0)[0]
-    if uniq_idx.size < 2:
-        raise RuntimeError(f"Too few unique frequency bins for sample {i}. Got {freqs.size} freq points.")
-    freqs_unique = freqs[uniq_idx]
-    amp_unique = amp[uniq_idx]
-    phase_unique = phase[uniq_idx]
 
-    k_amp = min(3, max(1, freqs.size - 1))
-    k_phase = min(3, max(1, freqs.size - 1))
-
-    spline_amp = UnivariateSpline(freqs, amp, s=0, k=k_amp, ext=0)
-    spline_phase = UnivariateSpline(freqs, phase, s=0, k=k_phase, ext=0)
+    spline_amp = UnivariateSpline(freqs, amp, s=0, k=3, ext=2)
+    spline_phase = UnivariateSpline(freqs, phase, s=0, k=3, ext=2)
 
     fmin, fmax = freqs[0], freqs[-1]
 
@@ -371,11 +353,11 @@ print("Step III: Performing SVD to find reduced bases...")
 Ua, sa, Vta = np.linalg.svd(A_mat, full_matrices=False)
 Up, sp, Vtp = np.linalg.svd(Phi_mat, full_matrices=False)
 
-rank_a = 200
-rank_p = 150
+rank_a = 30
+rank_p = 20
 
 B_a = Ua[:, :rank_a] 
-B_p = Up[:, :rank_p] 
+B_p = Up[:, :rank_p]
 
 # -----------------------------------------------------------------------------
 # ## Step IV: Interpolate Projection Coefficients
@@ -409,18 +391,15 @@ interp_amp_norm = RectBivariateSpline(chi_unique, q_unique, amp_norms_grid, kx=3
 print("Step V: Assembling the surrogate model evaluator.")
 
 def evaluate_surrogate_fd(q_star, chi_star, freqs_out):
-    """
-    Evaluates the surrogate model at a new parameter point (q*, chi*).
-    """
     ca_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_a])
     cp_star = np.array([interp(chi_star, q_star)[0, 0] for interp in interpolants_p])
 
     amp_recon_sparse = B_a @ ca_star
     phase_recon_sparse = B_p @ cp_star
 
-    spline_amp = UnivariateSpline(sparse_freq_amp, amp_recon_sparse, s=0, k=min(3, max(1, sparse_freq_amp.size-1)), ext=0)
-    spline_phase = UnivariateSpline(sparse_freq_phase, phase_recon_sparse, s=0, k=min(3, max(1, sparse_freq_phase.size-1)), ext=0)
-    
+    spline_amp = UnivariateSpline(sparse_freq_amp, amp_recon_sparse, s=0, k=3, ext=2)
+    spline_phase = UnivariateSpline(sparse_freq_phase, phase_recon_sparse, s=0, k=3, ext=2)
+
     amp_final = spline_amp(freqs_out)
     phase_final = spline_phase(freqs_out)
 
@@ -440,16 +419,14 @@ test_params = {'q': 8.23, 'chi': -0.5}
 # test_params = {'q': 4.5, 'chi': 0.45}
 # test_params = {'q': 1.23, 'chi': -0.7}
 
-true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, epsilon=epsilon)
+true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, padding_type='power_of_2', epsilon=epsilon, num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end)
 mask = (true_freqs >= f_min_grid) & (true_freqs <= f_max_grid)
 true_freqs_masked = true_freqs[mask]
 true_h_fd_masked = true_h_fd[mask]
 true_amp, true_phase = get_amp_phase(true_freqs_masked, true_h_fd_masked)
 
 surr_freqs, surr_h_fd = evaluate_surrogate_fd(test_params['q'], test_params['chi'], true_freqs_masked)
-
-surr_amp = np.abs(surr_h_fd)
-surr_phase = np.unwrap(np.angle(surr_h_fd))
+surr_amp, surr_phase = get_amp_phase(surr_freqs, surr_h_fd)
 
 # -----------------------------------------------------------------------------
 # ## Compute mismatch
@@ -460,7 +437,7 @@ pycbc_surr_h_fd.start_time = 0
 pycbc_true_h_fd.start_time = 0
 
 mismatch = 1 - pycbc.filter.matchedfilter.optimized_match(pycbc_surr_h_fd, pycbc_true_h_fd, psd=pycbc.psd.aLIGOZeroDetHighPower(len(pycbc_true_h_fd), pycbc_true_h_fd.delta_f, f_lower), low_frequency_cutoff=f_min_grid)[0]
-print(f"Mismatch between surrogate model and true model = {mismatch:.3e}")
+print(f"Mismatch between surrogate model and true model = {mismatch:.3e}\n")
 
 # -----------------------------------------------------------------------------
 # ## Plot the results
@@ -476,8 +453,8 @@ axs[0].legend(fontsize=11)
 axs[0].set_title('Amplitude Comparison', fontsize=14)
 axs[0].grid(True, which="both", ls="--")
 
-axs[1].semilogx(true_freqs_masked, true_phase, label='True Waveform (centered)', lw=3, alpha=0.8)
-axs[1].semilogx(surr_freqs, surr_phase, '--', label='Surrogate Model (centered)', lw=2, color='red')
+axs[1].semilogx(true_freqs_masked, true_phase, label='True Waveform', lw=3, alpha=0.8)
+axs[1].semilogx(surr_freqs, surr_phase, '--', label='Surrogate Model', lw=2, color='red')
 axs[1].set_xlabel('Frequency (Hz)', fontsize=12)
 axs[1].set_ylabel('Phase (rad)', fontsize=12)
 axs[1].legend(fontsize=11)
@@ -509,7 +486,7 @@ surrogate_data = {
 }
 
 save_surrogate("Models/surrogate_model.pkl", surrogate_data)
-print("Surrogate model saved to surrogate_model.pkl")
+print("Surrogate model saved to surrogate_model.pkl\n")
 
 
 
@@ -594,7 +571,7 @@ plot_normalized_singular_values(sa, sp)
 # -----------------------------------------------------------------------------
 print("Checking smoothness of projection coefficients...")
 
-modes_to_plot = [0, 1, 2, 3, 10, 20]
+modes_to_plot = [0, 1, 2, 3, 4, 9]
 
 fig = plt.figure(figsize=(14, 4*len(modes_to_plot)))
 fig.suptitle("Projection Coefficients across Parameter Space", fontsize=16)
@@ -691,22 +668,24 @@ def plot_basis_functions(basis_matrix, freq_grid, modes_to_plot, basis_type):
 
     for mode in modes_to_plot:
         if mode < basis_matrix.shape[1]:
-            plt.plot(freq_grid, basis_matrix[:, mode], label=f'Basis Function {mode}', lw=2)
+            plt.plot(freq_grid, basis_matrix[:, mode], label=f'Basis Function {mode}', lw=1, marker='o', markersize=1.5)
         else:
             print(f"Warning: Mode {mode} is out of bounds for the given basis matrix.")
 
     plt.title(f'{basis_type} Basis Functions', fontsize=16)
     plt.xlabel('Frequency (Hz)', fontsize=12)
     plt.ylabel('Basis Function Value', fontsize=12)
-    plt.xscale('log') 
+    plt.xscale('log')
     plt.grid(True, which="both", ls="--")
     plt.legend()
     plt.tight_layout()
     plt.savefig(f'{args.results_dir}/{basis_type}_basis_functions.pdf', dpi=300)
     plt.show()
 
-plot_basis_functions(B_a, sparse_freq_amp, [0, 1, 2, 3, 10, 20], 'Amplitude')
-plot_basis_functions(B_p, sparse_freq_phase, [0, 1, 2, 3, 10, 20], 'Phase')
+modes_to_plot = np.arange(0, 9)
+
+plot_basis_functions(B_a, sparse_freq_amp, modes_to_plot, 'Amplitude')
+plot_basis_functions(B_p, sparse_freq_phase, modes_to_plot, 'Phase')
 
 # -----------------------------------------------------------------------------
 # ## Plotting the waveforms in frequency domain
@@ -720,3 +699,4 @@ plot_basis_functions(B_p, sparse_freq_phase, [0, 1, 2, 3, 10, 20], 'Phase')
 # plt.title(f"Surrogate Model Validation for q={test_params['q']}, $\chi$={test_params['chi']}")
 # plt.legend()
 # plt.grid(True, which="both", ls="--")
+# plt.show()

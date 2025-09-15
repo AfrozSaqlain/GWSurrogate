@@ -692,7 +692,7 @@ def compute_mismatch_point(q, chi):
 # Main: grid, parallel execution
 # ----------------------------
 # Your original parameters
-f_lower = 15.0
+f_lower = 16.0
 f_min_grid = 20.0
 f_max_grid = 725.0
 delta_t = 1/4096
@@ -700,8 +700,8 @@ delta_t = 1/4096
 window_type = 'planck'
 
 total_mass = 40
-q_vals = np.linspace(1, 10, 50)
-chi_vals = np.linspace(-1.0, 1.0, 50)
+q_vals = np.linspace(1, 10, 30)
+chi_vals = np.linspace(-1.0, 1.0, 30)
 
 # Prepare pairs to evaluate
 pairs = [(q, chi) for chi in chi_vals for q in q_vals]  # order: chi major then q minor (matches your array shape)
