@@ -1,5 +1,9 @@
 import numpy as np
 from scipy.special import expit
+from scipy.signal import windows
+from scipy.fft import rfft, rfftfreq
+
+from pycbc.waveform import get_td_waveform
 
 LALSIMULATION_RINGING_EXTENT = 19
 def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_extrema_start=32, num_extrema_end=32):
@@ -113,6 +117,38 @@ def Planck_window_LAL(data, taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', num_
     return window
 
 def planck_taper(N, epsilon=0.1):
+    """Generates a Planck-taper window.
+
+    Planck-taper window is a window function that is flat in the middle and
+    smoothly tapers to zero at both ends.
+
+    The shape of the tapered sections is derived from a function related to
+    Planck's law, which provides an infinitely differentiable transition from the
+    flat-top region (with a value of 1) to the zero-value regions. This
+    implementation uses the logistic function (`scipy.special.expit`) for a
+    numerically stable computation of the taper.
+
+    Parameters
+    ----------
+    N : int
+        The total number of points in the output window.
+    epsilon : float, optional
+        The fraction of the window's length at **each end** that is tapered.
+        This value must be in the range (0, 0.5). For example, if `N` is
+        1000 and `epsilon` is 0.1, the first 100 points and the last 100
+        points form the tapered sections. The default is 0.1.
+
+    Returns
+    -------
+    numpy.ndarray
+        A 1D NumPy array of shape `(N,)` containing the window values, which
+        range from 0.0 to 1.0.
+
+    Raises
+    ------
+    ValueError
+        If `epsilon` is not in the valid range of (0, 0.5).
+    """
     if not (0 < epsilon < 0.5):
         raise ValueError("epsilon must be between 0 and 0.5")
 
@@ -132,3 +168,73 @@ def planck_taper(N, epsilon=0.1):
     # w[-1] = 0.0
 
     return w
+
+# -----------------------------------------------------------------------------
+# ## Waveform Generator
+# -----------------------------------------------------------------------------
+def generate_fd_waveform(params, f_lower, delta_t, window_type='lal_planck', LAL_taper_method='LAL_SIM_INSPIRAL_TAPER_STARTEND', padding_type='power_of_2', epsilon=0.05, num_extrema_start=32, num_extrema_end=32):
+    q = params['q']
+    chi = params['chi']
+    M_total = 40.0
+    m2 = M_total / (1 + q)
+    m1 = q * M_total / (1 + q)
+
+    hp, _ = get_td_waveform(approximant='SEOBNRv4_opt',
+                                mass1=m1, mass2=m2,
+                                spin1z=chi, spin2z=chi,
+                                delta_t=delta_t,
+                                f_lower=f_lower)
+    h_td_raw = hp.numpy()
+
+    if window_type == "tukey":
+        window = windows.tukey(len(h_td_raw), alpha=0.1)
+    elif window_type == "planck":
+        window = planck_taper(len(h_td_raw), epsilon=epsilon)
+    elif window_type == "lal_planck":
+        window = Planck_window_LAL(h_td_raw, taper_method=LAL_taper_method, num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end) 
+    else:
+        window = np.ones(len(h_td_raw))
+
+    h_td_windowed = h_td_raw * window
+    
+    L = len(h_td_windowed)
+    
+    if padding_type == "power_of_2":
+      nfft = 2 ** int(np.ceil(np.log2(2 * L)))
+    elif padding_type == 'double':
+      nfft = 2 * L
+
+    h_td = np.pad(h_td_windowed, (0, nfft - L))
+
+    freqs = rfftfreq(nfft, delta_t)
+    h_fd = rfft(h_td)
+    return freqs, h_fd
+
+def get_amp_phase(freqs, h_fd):
+    amp = np.abs(h_fd)
+    phase = np.unwrap(np.angle(h_fd))
+
+    poly_fit = np.polyfit(freqs, phase, 1)
+    linear_phase = np.polyval(poly_fit, freqs)
+    phase_centered = phase - linear_phase
+    
+    phase_offset = phase_centered[0]
+    phase_anchored = phase_centered - phase_offset
+
+    return amp, phase_anchored
+
+def generate_sparse_grid(f_min, f_max, num_points, power=4/3):
+    if power == 1:
+        return np.geomspace(f_min, f_max, num_points)
+
+    y_min = f_min**(1 - power)
+    y_max = f_max**(1 - power)
+
+    y_grid = np.linspace(y_min, y_max, num_points)
+
+    f_grid = y_grid**(1 / (1 - power))
+
+    f_grid[0] = f_min
+    f_grid[-1] = f_max
+    
+    return f_grid
