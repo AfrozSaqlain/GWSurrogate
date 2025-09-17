@@ -127,8 +127,8 @@ def planck_taper(N, epsilon=0.1):
     w[:L-1] = expit(-x)
     w[0] = 0.0
 
-    x = L/(L-n) - L/n
-    w[-(L-1):] = expit(-x)
-    w[-1] = 0.0
+    # x = L/(L-n) - L/n
+    # w[-(L-1):] = expit(-x)
+    # w[-1] = 0.0
 
     return w
