@@ -160,9 +160,9 @@ print("\nValidating model with a test waveform...")
 # -----------------------------------------------------------------------------
 # ## Run a test case to validate the surrogate model
 # -----------------------------------------------------------------------------
-test_params = {'q': 8.23, 'chi': -0.5}
+test_params = {'q': 2.3, 'chi': 0.98}
 # test_params = {'q': 4.5, 'chi': 0.45}
-# test_params = {'q': 1.23, 'chi': -0.7}
+# test_params = {'q': 8.23, 'chi': -0.5}
 
 true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, padding_type='power_of_2', epsilon=epsilon, num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end)
 mask = (true_freqs >= f_min_grid) & (true_freqs <= f_max_grid)

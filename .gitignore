@@ -3,3 +3,4 @@ Models/
 experimentation/
 notes.mdx
 tmp/
+__pycache__/
