@@ -66,12 +66,12 @@ F_MAX_GRID = None
 F_LOWER = None
 DELTA_T = None
 EPSILON = None
+WINDOW_TYPE = None
 LAL_TAPER_METHOD = None
 
-def init_worker(surr_raw, f_min_grid, f_max_grid, f_lower, delta_t, epsilon, lal_taper_method, num_extrema_start, num_extrema_end):
+def init_worker(surr_raw, f_min_grid, f_max_grid, f_lower, delta_t, window_type, epsilon, lal_taper_method, num_extrema_start, num_extrema_end):
     """Initializer for worker processes: sets global raw surrogate and constants."""
-    global SURR_RAW, SURR_CACHE, F_MIN_GRID, F_MAX_GRID, F_LOWER, DELTA_T, EPSILON
-    global LAL_TAPER_METHOD, NUM_EXTREMA_START, NUM_EXTREMA_END
+    global SURR_RAW, SURR_CACHE, F_MIN_GRID, F_MAX_GRID, F_LOWER, DELTA_T, EPSILON, WINDOW_TYPE, LAL_TAPER_METHOD, NUM_EXTREMA_START, NUM_EXTREMA_END
 
     SURR_RAW = surr_raw
     SURR_CACHE = {
@@ -84,6 +84,7 @@ def init_worker(surr_raw, f_min_grid, f_max_grid, f_lower, delta_t, epsilon, lal
     F_LOWER = f_lower
     DELTA_T = delta_t
     EPSILON = epsilon
+    WINDOW_TYPE= window_type
     LAL_TAPER_METHOD = lal_taper_method
     NUM_EXTREMA_START = num_extrema_start
     NUM_EXTREMA_END = num_extrema_end
@@ -134,7 +135,7 @@ def compute_mismatch_point(q, chi):
     # generate waveform
     params = {"q": q, "chi": chi}
 
-    freqs, h_fd = generate_fd_waveform(params, F_LOWER, DELTA_T, window_type=window_type, LAL_taper_method=LAL_taper_method, padding_type='power_of_2', epsilon=EPSILON, num_extrema_start=NUM_EXTREMA_START, num_extrema_end=NUM_EXTREMA_END)
+    freqs, h_fd = generate_fd_waveform(params, F_LOWER, DELTA_T, window_type=WINDOW_TYPE, LAL_taper_method=LAL_taper_method, padding_type='power_of_2', epsilon=EPSILON, num_extrema_start=NUM_EXTREMA_START, num_extrema_end=NUM_EXTREMA_END)
 
     mask = (freqs >= F_MIN_GRID) & (freqs <= F_MAX_GRID)
     
@@ -174,15 +175,15 @@ bounds_q = (1, 10)
 bounds_chi = (-1, 1)
 
 q_vals = np.concatenate((
-    np.linspace(bounds_q[0], bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.2, 15, endpoint=False),
+    np.linspace(bounds_q[0], bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.2, 20, endpoint=False),
     np.linspace(bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.2, bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.8, 10, endpoint=False),
-    np.linspace(bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.8, bounds_q[1], 15)
+    np.linspace(bounds_q[0] + (bounds_q[1] - bounds_q[0]) * 0.8, bounds_q[1], 20)
 ))
 
 chi_vals = np.concatenate((
-    np.linspace(bounds_chi[0], bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.2, 15, endpoint=False),
+    np.linspace(bounds_chi[0], bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.2, 20, endpoint=False),
     np.linspace(bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.2, bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.8, 10, endpoint=False),
-    np.linspace(bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.8, bounds_chi[1], 15)
+    np.linspace(bounds_chi[0] + (bounds_chi[1] - bounds_chi[0]) * 0.8, bounds_chi[1], 20)
 ))
 
 pairs = [(q, chi) for chi in chi_vals for q in q_vals] 
@@ -193,7 +194,7 @@ mismatch_flat = np.full(len(pairs), np.nan)
 
 with ProcessPoolExecutor(max_workers=NPROCS,
                          initializer=init_worker,
-                         initargs=(surrogate_raw, f_min_grid, f_max_grid, f_lower, delta_t, epsilon, LAL_taper_method, num_extrema_start, num_extrema_end)) as exe:
+                         initargs=(surrogate_raw, f_min_grid, f_max_grid, f_lower, delta_t, window_type, epsilon, LAL_taper_method, num_extrema_start, num_extrema_end)) as exe:
     futures = {exe.submit(compute_mismatch_point, q, chi): i for i, (q, chi) in enumerate(pairs)}
     for fut in tqdm(as_completed(futures), total=len(futures)):
         idx = futures[fut]
