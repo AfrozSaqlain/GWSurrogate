@@ -215,6 +215,7 @@ plt.show()
 # -----------------------------------------------------------------------------
 def save_surrogate(filename, data):
     """Save surrogate model data to disk."""
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "wb") as f:
         pickle.dump(data, f)
 
