@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "surrogw"
+version = "0.1.0"
+description = "Surrogate modeling framework for gravitational waveforms using reduced-order methods."
+readme = "README.md"
+requires-python = ">=3.10"
+
+authors = [
+    {name = "Saqlain Afroz"}
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["surrogw*"]
