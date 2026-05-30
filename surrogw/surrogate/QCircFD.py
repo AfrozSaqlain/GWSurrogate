@@ -37,21 +37,21 @@ class QCircFD:
     def interpolate_projection_coefficient(self):
         print("Step II: Interpolating projection coefficients...")
 
-        Ca = self.B_a.T @ self.data.A_mat
-        Cp = self.B_p.T @ self.data.Phi_mat
+        self.Ca = self.B_a.T @ self.data.A_mat
+        self.Cp = self.B_p.T @ self.data.Phi_mat
 
         q_unique = np.unique(self.data.param_grid_q)
         chi_unique = np.unique(self.data.param_grid_chi)
 
         self.interpolants_a = []
         for i in range(self.rank_a):
-            coeff_grid = Ca[i, :].reshape(len(chi_unique), len(q_unique))
+            coeff_grid = self.Ca[i, :].reshape(len(chi_unique), len(q_unique))
             interp = RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3)
             self.interpolants_a.append(interp)
 
         self.interpolants_p = []
         for i in range(self.rank_p):
-            coeff_grid = Cp[i, :].reshape(len(chi_unique), len(q_unique))
+            coeff_grid = self.Cp[i, :].reshape(len(chi_unique), len(q_unique))
             interp = RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3)
             self.interpolants_p.append(interp)
 
@@ -86,10 +86,10 @@ class QCircFD:
     # -----------------------------------------------------------------------------
     # ## Run a test case to validate the surrogate model
     # -----------------------------------------------------------------------------
-    def validate_surrogate(self):
+    def validate_surrogate(self, q=2.3, chi=0.98):
         print("\nValidating model with a test waveform...")
 
-        test_params = {'q': 2.3, 'chi': 0.98}
+        test_params = {'q': q, 'chi': chi}
 
         true_freqs, true_h_fd = generate_fd_waveform(test_params, f_lower, delta_t, window_type=window_type, padding_type='power_of_2', epsilon=epsilon, num_extrema_start=num_extrema_start, num_extrema_end=num_extrema_end)
         mask = (true_freqs >= self.data.f_min_mask) & (true_freqs <= self.data.f_max_mask)
@@ -108,7 +108,11 @@ class QCircFD:
         pycbc_surr_h_fd.start_time = 0
         pycbc_true_h_fd.start_time = 0
 
-        mismatch = 1 - pycbc.filter.matchedfilter.optimized_match(pycbc_surr_h_fd, pycbc_true_h_fd, psd=pycbc.psd.aLIGOZeroDetHighPower(len(pycbc_true_h_fd), pycbc_true_h_fd.delta_f, f_lower), low_frequency_cutoff=self.data.f_min_mask)[0]
+        mismatch = 1 - pycbc.filter.matchedfilter.optimized_match(pycbc_surr_h_fd, 
+                                                                  pycbc_true_h_fd, 
+                                                                  psd=pycbc.psd.aLIGOZeroDetHighPower(len(pycbc_true_h_fd), pycbc_true_h_fd.delta_f, f_lower), 
+                                                                  low_frequency_cutoff=self.data.f_min_mask)[0]
+        
         print(f"Mismatch between surrogate model and true model = {mismatch:.3e}\n")
 
         # -----------------------------------------------------------------------------
@@ -147,15 +151,19 @@ class QCircFD:
             f.create_dataset("B_p", data=self.B_p, compression="gzip")
 
             # Sparse frequency grids
-            f.create_dataset("sparse_freq_amp", data=self.data.sparse_freq_amp )
-            f.create_dataset("sparse_freq_phase", data=self.data.sparse_freq_phase )
+            f.create_dataset("sparse_freq_amp", data=self.data.sparse_freq_amp)
+            f.create_dataset("sparse_freq_phase", data=self.data.sparse_freq_phase)
 
             # Training parameter grids
-            f.create_dataset("param_grid_q", data=self.data.param_grid_q )
-            f.create_dataset("param_grid_chi", data=self.data.param_grid_chi )
+            f.create_dataset("param_grid_q", data=self.data.param_grid_q)
+            f.create_dataset("param_grid_chi", data=self.data.param_grid_chi)
 
             # Amplitude normalization
-            f.create_dataset("amp_norms", data=self.data.amp_norms )
+            f.create_dataset("amp_norms", data=self.data.amp_norms)
+
+            # Coefficient matrices
+            f.create_dataset("Ca", data=self.Ca)
+            f.create_dataset("Cp", data=self.Cp)
 
             # Metadata
             f.attrs["rank_a"] = self.rank_a
@@ -168,9 +176,29 @@ class QCircFD:
 
         print(f"Surrogate model saved to {filename}")
 
+    def load_surrogate(self, filename='surrogate_model.hdf5'):
+        with h5py.File(filename, "r") as f:
+            self.B_a = f['B_a'][:]
+            self.B_p = f['B_p'][:]
 
+            self.rank_a = f.attrs["rank_a"]
+            self.rank_p = f.attrs["rank_p"]
 
+            self.Ca = f["Ca"][:]
+            self.Cp = f["Cp"][:]
 
+        q_unique = np.unique(self.data.param_grid_q)
+        chi_unique = np.unique(self.data.param_grid_chi)
 
+        self.interpolants_a = []
+        for i in range(self.rank_a):
+            coeff_grid = self.Ca[i].reshape(len(chi_unique), len(q_unique))
+            self.interpolants_a.append(RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3))
 
+        self.interpolants_p = []
+        for i in range(self.rank_p):
+            coeff_grid = self.Cp[i].reshape(len(chi_unique), len(q_unique))
+            self.interpolants_p.append(RectBivariateSpline(chi_unique, q_unique, coeff_grid, kx=3, ky=3))
 
+        amp_norms_grid = self.data.amp_norms.reshape(len(chi_unique), len(q_unique))
+        self.interp_amp_norm = RectBivariateSpline(chi_unique, q_unique, amp_norms_grid, kx=3, ky=3)
