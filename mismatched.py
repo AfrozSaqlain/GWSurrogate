@@ -7,8 +7,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pycbc
 import pycbc.psd
 
-from modules.gw_utils import generate_fd_waveform
-from modules.constants import f_lower, delta_t, f_min_mask, f_max_mask, window_type, LAL_taper_method, epsilon, num_extrema_start, num_extrema_end
+from surrogw.modules.gw_utils import generate_fd_waveform
+from surrogw.modules.constants import f_lower, delta_t, f_min_mask, f_max_mask, window_type, LAL_taper_method, epsilon, num_extrema_start, num_extrema_end
 
 import math
 import numpy as np

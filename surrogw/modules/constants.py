@@ -1,0 +1,9 @@
+f_lower = 10.0
+delta_t = 1/4096
+f_min_mask = 15.0
+f_max_mask = 725.0
+window_type = "planck"
+epsilon = 0.1
+num_extrema_start=32
+num_extrema_end=32
+LAL_taper_method = 'LAL_SIM_INSPIRAL_TAPER_START'

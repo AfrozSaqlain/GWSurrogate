@@ -10,8 +10,8 @@ from scipy.interpolate import UnivariateSpline, RectBivariateSpline
 
 from pycbc.waveform import get_td_waveform
 
-from modules.constants import *
-from modules.gw_utils import generate_sparse_grid, get_amp_phase, planck_taper, Planck_window_LAL
+from surrogw.modules.constants import *
+from surrogw.modules.gw_utils import generate_sparse_grid, get_amp_phase, planck_taper, Planck_window_LAL
 
 parser = argparse.ArgumentParser(description="Train a surrogate model for gravitational waveforms.")
 parser.add_argument('--results-dir', type=str, default='Results', help='Directory to save results and plots.')

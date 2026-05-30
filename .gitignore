@@ -5,3 +5,4 @@ notes.mdx
 tmp/
 __pycache__/
 tmp.py
+notebooks/
